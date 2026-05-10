@@ -6,6 +6,7 @@ from utils_sms import send_sms
 from utils_email import send_email
 import datetime
 import threading
+import uuid
 
 patients_bp = Blueprint("patients", __name__)
 
@@ -196,33 +197,45 @@ def create_patient():
         
         # Date of visit
         date_of_visit = data.get("date_of_visit") or datetime.datetime.utcnow().isoformat()
-        
+
+        # Patient type: offline (walk-in) or online (delivery order)
+        patient_type = data.get("patient_type", "offline")
+
         # Extract treatment for next visit calculation (check both field names)
         treatment = data.get("treatment") or data.get("treatment_type") or ""
         next_visit_iso = None
         if treatment:
             next_visit_iso = compute_next_visit_date(treatment, date_of_visit)
-        
+
         # Create visit record
         initial_visit = {
+            "visit_id": str(uuid.uuid4()),
             "date_of_visit": date_of_visit,
             "doctor_notes": data.get("doctor_notes", ""),
             "doctor_advice": data.get("doctor_advice", ""),
             "treatment": data.get("treatment", ""),
             "photos": data.get("photos", []),
             "medicines": data.get("medicines", []),
+            "blood_tests": data.get("blood_tests", []),
             "next_visit": next_visit_iso,
             "created_at": datetime.datetime.utcnow().isoformat(),
+            # Online order payment fields
+            "payment_datetime": data.get("payment_datetime", ""),
+            "amount_paid": data.get("amount_paid", ""),
+            "dispatch_date": data.get("dispatch_date", ""),
+            "tracking_id": data.get("tracking_id", ""),
         }
-        
+
         # Create patient document
         patient = {
             "patient_id": patient_id,
+            "patient_type": patient_type,
             "full_name": full_name,
             "age": data.get("age"),
             "gender": data.get("gender"),
             "whatsapp": whatsapp,
             "email": data.get("email"),
+            "address": data.get("address", ""),
             "medical_history": data.get("medical_history", ""),
             "current_issues": data.get("current_issues", ""),
             "visits": [initial_visit],
@@ -263,6 +276,17 @@ def list_patients():
         q["patient_id"] = patient_id
     if treatment_type:
         q["visits.treatment_type"] = treatment_type
+    patient_type_filter = request.args.get("patient_type")
+    if patient_type_filter:
+        if patient_type_filter == "offline":
+            # Legacy patients have no patient_type field — treat them as offline
+            q["$or"] = [
+                {"patient_type": "offline"},
+                {"patient_type": {"$exists": False}},
+                {"patient_type": None},
+            ]
+        else:
+            q["patient_type"] = patient_type_filter
 
     # TODO: date range filter can be implemented on visits.date_of_visit
 
@@ -306,9 +330,16 @@ def update_patient(patient_id):
             next_visit_iso = compute_next_visit_date(treatment, date_of_visit)
             visit["next_visit"] = next_visit_iso
             update["$set"]["next_visit"] = next_visit_iso
+        # Ensure each visit has a unique ID and online order fields
+        if "visit_id" not in visit:
+            visit["visit_id"] = str(uuid.uuid4())
+        visit.setdefault("payment_datetime", "")
+        visit.setdefault("amount_paid", "")
+        visit.setdefault("dispatch_date", "")
+        visit.setdefault("tracking_id", "")
         update["$push"]["visits"] = visit
     # update top-level fields
-    for k in ["full_name", "age", "gender", "whatsapp", "email", "medical_history", "current_issues"]:
+    for k in ["full_name", "age", "gender", "whatsapp", "email", "address", "medical_history", "current_issues"]:
         if k in data:
             update["$set"][k] = data[k]
     update["$set"]["updated_at"] = datetime.datetime.utcnow()
@@ -342,3 +373,32 @@ def delete_patient(patient_id):
     if res.deleted_count == 0:
         return jsonify({"msg": "not found"}), 404
     return jsonify({"msg": "deleted"})
+
+
+@patients_bp.route("/<patient_id>/visit-dispatch", methods=["PATCH"], strict_slashes=False)
+@jwt_required()
+def update_visit_dispatch(patient_id):
+    """Update dispatch_date / tracking_id (and optionally payment info) for a specific visit."""
+    data = request.get_json() or {}
+    visit_id = data.get("visit_id")
+    if not visit_id:
+        return jsonify({"msg": "visit_id is required"}), 400
+
+    set_fields = {}
+    for field in ["dispatch_date", "tracking_id", "payment_datetime", "amount_paid"]:
+        if field in data:
+            set_fields[f"visits.$[v].{field}"] = data[field]
+
+    if not set_fields:
+        return jsonify({"msg": "nothing to update"}), 400
+
+    set_fields["updated_at"] = datetime.datetime.utcnow().isoformat()
+
+    res = db.patients.update_one(
+        {"patient_id": patient_id},
+        {"$set": set_fields},
+        array_filters=[{"v.visit_id": visit_id}]
+    )
+    if res.matched_count == 0:
+        return jsonify({"msg": "patient not found"}), 404
+    return jsonify({"msg": "visit dispatch info updated"})

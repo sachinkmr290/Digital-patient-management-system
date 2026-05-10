@@ -9,6 +9,7 @@ import ArrowForwardIcon from '@mui/icons-material/ArrowForward'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import api from '../api'
 import MedicinesSelector from './MedicinesSelector'
+import BloodTestSelector from './BloodTestSelector'
 import { useNavigate } from 'react-router-dom'
 
 const genders = [
@@ -57,18 +58,26 @@ const EMPTY_FORM = {
   gender: '',
   whatsapp: '',
   email: '',
+  address: '',
   medical_history: '',
   current_issues: '',
   doctor_notes: '',
   doctor_advice: '',
-  treatment: ''
+  treatment: '',
+  // Online order fields
+  payment_datetime: '',
+  amount_paid: '',
+  dispatch_date: '',
+  tracking_id: '',
 }
 
-export default function PatientForm() {
+export default function PatientForm({ mode = 'offline' }) {
+  const isOnline = mode === 'online'
   const [form, setForm] = useState(EMPTY_FORM)
   const [photos, setPhotos] = useState([])
   const [selectedMedicines, setSelectedMedicines] = useState([])
   const [loading, setLoading] = useState(false)
+  const [selectedBloodTests, setSelectedBloodTests] = useState([])
   const [otherTreatmentDialogOpen, setOtherTreatmentDialogOpen] = useState(false)
   const [otherTreatment, setOtherTreatment] = useState('')
 
@@ -96,10 +105,13 @@ export default function PatientForm() {
       const res = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/upload`, { method: 'POST', body: fd })
       const data = await res.json()
       if (data.secure_url) {
-        setPhotos((p) => [...p, data.secure_url])
+        // Add f_auto,q_auto so Cloudinary converts HEIC/HEIF to browser-compatible format (WebP/JPEG)
+        const url = data.secure_url.replace('/upload/', '/upload/f_auto,q_auto/')
+        setPhotos((p) => [...p, url])
         alert('Photo uploaded successfully')
       } else {
-        alert('Upload failed')
+        console.error('Cloudinary error:', data)
+        alert(`Upload failed: ${data.error?.message || 'Unknown error'}`)
       }
     } catch (err) {
       console.error(err)
@@ -115,13 +127,18 @@ export default function PatientForm() {
       alert('Full name, WhatsApp, Age, Gender and Treatment are required fields.')
       return
     }
+    if (isOnline && (!form.payment_datetime || !form.amount_paid)) {
+      alert('Payment Date/Time and Amount Paid are required for online patients.')
+      return
+    }
     try {
-      const payload = { ...form, photos, medicines: selectedMedicines }
+      const payload = { ...form, photos, medicines: selectedMedicines, patient_type: mode, blood_tests: selectedBloodTests }
       const res = await api.post('/api/patients', payload)
       setSuccessDialog({ open: true, patientId: res.data.patient_id, name: form.full_name })
       setForm(EMPTY_FORM)
       setPhotos([])
       setSelectedMedicines([])
+      setSelectedBloodTests([])
     } catch (err) {
       const data = err.response?.data
       // Duplicate patient — show friendly dialog
@@ -164,6 +181,9 @@ export default function PatientForm() {
                 <MenuItem value="">Select</MenuItem>
                 {genders.map(g => <MenuItem key={g.value} value={g.value}>{g.value}</MenuItem>)}
               </TextField>
+            </Grid>
+            <Grid item xs={12}>
+              <TextField label="Address" value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} fullWidth multiline rows={2} placeholder="House no., Street, Area, City, State, Pincode" />
             </Grid>
           </Grid>
 
@@ -235,6 +255,78 @@ export default function PatientForm() {
           </Grid>
 
           <Divider sx={{ my: 2 }} />
+
+          {/* Blood Tests — Offline patients only */}
+          {!isOnline && (
+            <>
+              <Box display="flex" alignItems="center" gap={1} mt={2} mb={1}>
+                <Box sx={{ width: 32, height: 32, borderRadius: 1.5, background: 'linear-gradient(135deg, #7c3aed, #6d28d9)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <span style={{ fontSize: 16 }}>🧪</span>
+                </Box>
+                <Typography variant="h6" sx={{ color: '#1e293b', fontWeight: 700 }}>Blood Test Prescriptions</Typography>
+              </Box>
+              <BloodTestSelector selectedTests={selectedBloodTests} onTestsChange={setSelectedBloodTests} />
+              <Divider sx={{ my: 2 }} />
+            </>
+          )}
+
+          {/* Online Order & Payment Details */}
+          {isOnline && (
+            <>
+              <Typography variant="h6" mt={2} mb={1} sx={{ color: '#0891b2', display: 'flex', alignItems: 'center', gap: 1 }}>
+                💳 Order & Payment Details
+              </Typography>
+              <Box sx={{ background: 'linear-gradient(135deg, #f0fdfe 0%, #e0f7fa 100%)', border: '1.5px solid #a5f3fc', borderRadius: 2, p: 2, mb: 2 }}>
+                <Grid container spacing={2}>
+                  <Grid item xs={12} sm={6}>
+                    <TextField
+                      label="Payment Date & Time *"
+                      type="datetime-local"
+                      value={form.payment_datetime}
+                      onChange={(e) => setForm({ ...form, payment_datetime: e.target.value })}
+                      InputLabelProps={{ shrink: true }}
+                      fullWidth
+                      required
+                    />
+                  </Grid>
+                  <Grid item xs={12} sm={6}>
+                    <TextField
+                      label="Amount Paid (₹) *"
+                      type="number"
+                      value={form.amount_paid}
+                      onChange={(e) => setForm({ ...form, amount_paid: e.target.value })}
+                      fullWidth
+                      required
+                      inputProps={{ min: 0, step: '0.01' }}
+                      placeholder="e.g. 1500"
+                    />
+                  </Grid>
+                  <Grid item xs={12} sm={6}>
+                    <TextField
+                      label="Dispatch Date (optional)"
+                      type="date"
+                      value={form.dispatch_date}
+                      onChange={(e) => setForm({ ...form, dispatch_date: e.target.value })}
+                      InputLabelProps={{ shrink: true }}
+                      fullWidth
+                      helperText="Fill when order is shipped"
+                    />
+                  </Grid>
+                  <Grid item xs={12} sm={6}>
+                    <TextField
+                      label="Tracking ID (optional)"
+                      value={form.tracking_id}
+                      onChange={(e) => setForm({ ...form, tracking_id: e.target.value })}
+                      fullWidth
+                      placeholder="e.g. DTDC123456789IN"
+                      helperText="Fill when order is shipped"
+                    />
+                  </Grid>
+                </Grid>
+              </Box>
+              <Divider sx={{ my: 2 }} />
+            </>
+          )}
 
           {/* Photos */}
           <Typography variant="h6" mt={2} mb={1}>Photos</Typography>

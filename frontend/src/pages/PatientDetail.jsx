@@ -1,13 +1,20 @@
 import React, { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Paper, Typography, Grid, Box, Button, TextField, Dialog, DialogTitle, DialogContent, DialogActions, MenuItem, Tabs, Tab, Alert, CircularProgress, Chip } from '@mui/material'
+import {
+  Paper, Typography, Grid, Box, Button, TextField, Dialog, DialogTitle,
+  DialogContent, DialogActions, MenuItem, Tabs, Tab, Alert, CircularProgress,
+  Chip, Divider
+} from '@mui/material'
 import CameraAltIcon from '@mui/icons-material/CameraAlt'
 import MedicalServicesIcon from '@mui/icons-material/MedicalServices'
+import LocalShippingIcon from '@mui/icons-material/LocalShipping'
+import PaymentIcon from '@mui/icons-material/Payment'
 import api from '../api'
 import dayjs from 'dayjs'
 import { useAuth } from '../auth/AuthProvider'
 import MedicinesSelector from '../components/MedicinesSelector'
 import MedicinesPanel from '../components/MedicinesPanel'
+import BloodTestSelector from '../components/BloodTestSelector'
 
 const TREATMENTS = [
   'Cupping',
@@ -60,13 +67,21 @@ export default function PatientDetail() {
   const [compare, setCompare] = useState({ a: null, b: null })
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [successMessage, setSuccessMessage] = useState('')
-  const [newVisit, setNewVisit] = useState({ date_of_visit: '', doctor_notes: '', doctor_advice: '', treatment: '', photos: [] })
+  const [newVisit, setNewVisit] = useState({
+    date_of_visit: '', doctor_notes: '', doctor_advice: '', treatment: '',
+    photos: [], payment_datetime: '', amount_paid: '', dispatch_date: '', tracking_id: '',
+    blood_tests: []
+  })
   const [uploading, setUploading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [selectedMedicines, setSelectedMedicines] = useState([])
   const [medicinesPanelOpen, setMedicinesPanelOpen] = useState(false)
   const [otherTreatmentDialogOpen, setOtherTreatmentDialogOpen] = useState(false)
   const [otherTreatment, setOtherTreatment] = useState('')
+  // Dispatch update dialog
+  const [dispatchDialog, setDispatchDialog] = useState({ open: false, visitId: null, dispatch_date: '', tracking_id: '' })
+  const [dispatchSaving, setDispatchSaving] = useState(false)
+  const [lightbox, setLightbox] = useState({ open: false, src: '' })
   const auth = useAuth()
   const nav = useNavigate()
 
@@ -88,35 +103,36 @@ export default function PatientDetail() {
     return val;
   }
 
-  const fetch = async () => {
+  const loadPatient = async () => {
     try {
       const res = await api.get(`/api/patients/${patient_id}`)
       setPatient({
         ...res.data,
-        medical_history: res.data.current_issues 
-          ? (res.data.medical_history ? `${res.data.medical_history}\n\Current Issues: ${res.data.current_issues}` : `Current Issues: ${res.data.current_issues}`)
+        medical_history: res.data.current_issues
+          ? (res.data.medical_history ? `${res.data.medical_history}\n\nCurrent Issues: ${res.data.current_issues}` : `Current Issues: ${res.data.current_issues}`)
           : res.data.medical_history
       })
-      setForm({ 
-        full_name: res.data.full_name, 
-        age: res.data.age, 
-        gender: res.data.gender, 
-        whatsapp: res.data.whatsapp, 
+      setForm({
+        full_name: res.data.full_name,
+        age: res.data.age,
+        gender: res.data.gender,
+        whatsapp: res.data.whatsapp,
         medical_history: res.data.current_issues ? (res.data.medical_history ? `${res.data.medical_history}\n\nCurrent Issues: ${res.data.current_issues}` : res.data.current_issues) : res.data.medical_history,
-        email: res.data.email 
+        email: res.data.email,
+        address: res.data.address || ''
       })
     } catch (e) {
       console.error(e)
     }
   }
 
-  useEffect(() => { fetch() }, [patient_id])
+  useEffect(() => { loadPatient() }, [patient_id])
 
   const save = async () => {
     try {
       await api.put(`/api/patients/${patient_id}`, form)
       setEditing(false)
-      fetch()
+      loadPatient()
     } catch (e) { alert('Save failed') }
   }
 
@@ -137,10 +153,13 @@ export default function PatientDetail() {
       const res = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/upload`, { method: 'POST', body: fd })
       const data = await res.json()
       if (data.secure_url) {
-        setNewVisit((v) => ({ ...v, photos: [...v.photos, data.secure_url] }))
+        // Add f_auto,q_auto so Cloudinary converts HEIC/HEIF to browser-compatible format (WebP/JPEG)
+        const url = data.secure_url.replace('/upload/', '/upload/f_auto,q_auto/')
+        setNewVisit((v) => ({ ...v, photos: [...v.photos, url] }))
         alert('Photo uploaded successfully')
       } else {
-        alert('Upload failed')
+        console.error('Cloudinary error:', data)
+        alert(`Upload failed: ${data.error?.message || 'Unknown error'}`)
       }
     } catch (err) {
       console.error(err)
@@ -156,15 +175,24 @@ export default function PatientDetail() {
         alert('Please select a treatment')
         return
       }
+      // For online patients, validate payment fields
+      if (patient?.patient_type === 'online' && (!newVisit.payment_datetime || !newVisit.amount_paid)) {
+        alert('Payment Date/Time and Amount Paid are required for online orders.')
+        return
+      }
       setSubmitting(true)
       const payload = { visit: { ...newVisit, medicines: selectedMedicines } }
       await api.put(`/api/patients/${patient_id}`, payload)
       setSuccessMessage('Visit added successfully! Confirmation sent to patient.')
-      setNewVisit({ date_of_visit: '', doctor_notes: '', doctor_advice: '', treatment: '', photos: [] })
+      setNewVisit({
+        date_of_visit: '', doctor_notes: '', doctor_advice: '', treatment: '',
+        photos: [], payment_datetime: '', amount_paid: '', dispatch_date: '', tracking_id: '',
+        blood_tests: []
+      })
       setSelectedMedicines([])
       setTimeout(() => {
-        fetch()
-        setTabValue(0) // Redirect to History & Details tab
+        loadPatient()
+        setTabValue(0)
         setSuccessMessage('')
       }, 2000)
     } catch (err) {
@@ -183,6 +211,23 @@ export default function PatientDetail() {
       await api.delete(`/api/patients/${patient_id}`)
       nav('/')
     } catch (e) { alert('Delete failed') }
+  }
+
+  const saveDispatch = async () => {
+    try {
+      setDispatchSaving(true)
+      await api.patch(`/api/patients/${patient_id}/visit-dispatch`, {
+        visit_id: dispatchDialog.visitId,
+        dispatch_date: dispatchDialog.dispatch_date,
+        tracking_id: dispatchDialog.tracking_id,
+      })
+      setDispatchDialog({ open: false, visitId: null, dispatch_date: '', tracking_id: '' })
+      loadPatient()
+    } catch (e) {
+      alert(e.response?.data?.msg || 'Failed to update dispatch info')
+    } finally {
+      setDispatchSaving(false)
+    }
   }
 
   const exportPdf = async () => {
@@ -227,6 +272,7 @@ export default function PatientDetail() {
                     <Typography><strong>Gender:</strong> {patient?.gender || ''}</Typography>
                     <Typography><strong>WhatsApp:</strong> {patient?.whatsapp || ''}</Typography>
                     <Typography><strong>Email:</strong> {patient?.email || ''}</Typography>
+                    <Typography><strong>Address:</strong> {patient?.address || <em style={{ color: '#94a3b8' }}>Not provided</em>}</Typography>
                     <Typography><strong>Next Visit:</strong> {patient?.next_visit ? dayjs(patient.next_visit).format('DD MMM YYYY, h:mm A') : ''}</Typography>
                     <Box mt={1}><Button onClick={() => setEditing(true)}>Edit</Button></Box>
                   </Box>
@@ -237,6 +283,7 @@ export default function PatientDetail() {
                     <TextField label="Gender" value={form.gender || ''} onChange={(e) => setForm({ ...form, gender: e.target.value })} />
                     <TextField label="WhatsApp" value={form.whatsapp || ''} onChange={(e) => setForm({ ...form, whatsapp: e.target.value })} />
                     <TextField label="Email" value={form.email || ''} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+                    <TextField label="Address" value={form.address || ''} onChange={(e) => setForm({ ...form, address: e.target.value })} multiline rows={2} placeholder="House no., Street, Area, City, State, Pincode" />
                     <Box>
                       <Typography variant="subtitle2" sx={{ mb: 1, mt: 1 }}>Common Conditions:</Typography>
                       <Box display="flex" gap={1} flexWrap="wrap" mb={1}>
@@ -275,13 +322,17 @@ export default function PatientDetail() {
                           {v.doctor_notes && <Typography variant="body2"><strong>Notes:</strong> {v.doctor_notes}</Typography>}
                           {v.doctor_advice && <Typography variant="body2"><strong>Advice:</strong> {v.doctor_advice}</Typography>}
                           {v.next_visit && <Typography variant="body2" sx={{ color: 'orange' }}><strong>Next Scheduled:</strong> {dayjs(v.next_visit).format('DD MMM YYYY')}</Typography>}
+                          {/* Online order info */}
+                          {patient?.patient_type === 'online' && (
+                            <OnlineVisitInfo v={v} onUpdateDispatch={() => setDispatchDialog({ open: true, visitId: v.visit_id, dispatch_date: v.dispatch_date || '', tracking_id: v.tracking_id || '' })} />
+                          )}
+                          {/* Blood tests */}
+                          {(v.blood_tests || []).length > 0 && (
+                            <BloodTestBadges tests={v.blood_tests} />
+                          )}
+                          {/* Photos */}
                           {(v.photos || []).length > 0 && (
-                            <Box mt={1}>
-                              <Typography variant="caption"><strong>Photos:</strong></Typography>
-                              <Box display="flex" gap={1} mt={0.5}>
-                                {v.photos.map((u, i) => (<img key={i} src={u} alt="photo" style={{ height: 80, borderRadius: 4 }} />))}
-                              </Box>
-                            </Box>
+                            <VisitPhotos photos={v.photos} onExpand={(src) => setLightbox({ open: true, src })} />
                           )}
                           {(v.medicines || []).length > 0 && (
                             <Box mt={2} sx={{ backgroundColor: '#f9f9f9', p: 1.5, borderRadius: 1, border: '2px solid #2196F3' }}>
@@ -326,13 +377,17 @@ export default function PatientDetail() {
                       {v.doctor_notes && <Typography variant="body2"><strong>Notes:</strong> {v.doctor_notes}</Typography>}
                       {v.doctor_advice && <Typography variant="body2"><strong>Advice:</strong> {v.doctor_advice}</Typography>}
                       {v.next_visit && <Typography variant="body2" sx={{ color: 'orange' }}><strong>Next Scheduled:</strong> {dayjs(v.next_visit).format('DD MMM YYYY')}</Typography>}
+                      {/* Online order info */}
+                      {patient?.patient_type === 'online' && (
+                        <OnlineVisitInfo v={v} onUpdateDispatch={() => setDispatchDialog({ open: true, visitId: v.visit_id, dispatch_date: v.dispatch_date || '', tracking_id: v.tracking_id || '' })} />
+                      )}
+                      {/* Blood tests */}
+                      {(v.blood_tests || []).length > 0 && (
+                        <BloodTestBadges tests={v.blood_tests} />
+                      )}
+                      {/* Photos */}
                       {(v.photos || []).length > 0 && (
-                        <Box mt={1}>
-                          <Typography variant="caption"><strong>Photos:</strong></Typography>
-                          <Box display="flex" gap={1} mt={0.5}>
-                            {v.photos.map((u, i) => (<img key={i} src={u} alt="photo" style={{ height: 80, borderRadius: 4 }} />))}
-                          </Box>
-                        </Box>
+                        <VisitPhotos photos={v.photos} onExpand={(src) => setLightbox({ open: true, src })} />
                       )}
                       {(v.medicines || []).length > 0 && (
                         <Box mt={2} sx={{ backgroundColor: '#f9f9f9', p: 1.5, borderRadius: 1, border: '2px solid #2196F3' }}>
@@ -362,19 +417,29 @@ export default function PatientDetail() {
 
               {/* Before/After Comparison */}
               <Paper sx={{ p: 2 }}>
-                <Typography variant="h6">Before / After Comparison</Typography>
-                <Typography variant="body2" sx={{ color: 'gray', mb: 1 }}>Select two visits to compare first photos</Typography>
+                <Typography variant="h6" sx={{ fontWeight: 700 }}>Before / After Comparison</Typography>
+                <Typography variant="body2" sx={{ color: '#64748b', mb: 2 }}>Select two visits with photos to compare</Typography>
                 <Box display="flex" gap={1} mb={2}>
-                  <TextField select label="Visit A" value={compare.a !== null ? compare.a : ''} onChange={(e) => setCompare(c => ({ ...c, a: e.target.value }))} size="small" sx={{ flex: 1 }}>
-                    <MenuItem value="">Select</MenuItem>
-                    {visits.map((v, i) => (<MenuItem key={i} value={i}>{dayjs(v.date_of_visit).format('DD MMM')} - {v.treatment}</MenuItem>))}
+                  <TextField select label="Before (Visit A)" value={compare.a !== null ? compare.a : ''} onChange={(e) => setCompare(c => ({ ...c, a: e.target.value }))} size="small" sx={{ flex: 1 }}>
+                    <MenuItem value="">Select Visit</MenuItem>
+                    {visits.map((v, i) => (
+                      <MenuItem key={i} value={i}>
+                        {dayjs(v.date_of_visit).format('DD MMM YYYY')} — {v.treatment}
+                        {(v.photos || []).length > 0 ? ' 📷' : ' (no photo)'}
+                      </MenuItem>
+                    ))}
                   </TextField>
-                  <TextField select label="Visit B" value={compare.b !== null ? compare.b : ''} onChange={(e) => setCompare(c => ({ ...c, b: e.target.value }))} size="small" sx={{ flex: 1 }}>
-                    <MenuItem value="">Select</MenuItem>
-                    {visits.map((v, i) => (<MenuItem key={i} value={i}>{dayjs(v.date_of_visit).format('DD MMM')} - {v.treatment}</MenuItem>))}
+                  <TextField select label="After (Visit B)" value={compare.b !== null ? compare.b : ''} onChange={(e) => setCompare(c => ({ ...c, b: e.target.value }))} size="small" sx={{ flex: 1 }}>
+                    <MenuItem value="">Select Visit</MenuItem>
+                    {visits.map((v, i) => (
+                      <MenuItem key={i} value={i}>
+                        {dayjs(v.date_of_visit).format('DD MMM YYYY')} — {v.treatment}
+                        {(v.photos || []).length > 0 ? ' 📷' : ' (no photo)'}
+                      </MenuItem>
+                    ))}
                   </TextField>
                 </Box>
-                <CompareImages visits={visits} a={compare.a} b={compare.b} />
+                <CompareImages visits={visits} a={compare.a} b={compare.b} onExpand={(src) => setLightbox({ open: true, src })} />
               </Paper>
             </Grid>
           </Grid>
@@ -386,6 +451,29 @@ export default function PatientDetail() {
             <Typography variant="h6" sx={{ mb: 2 }}>Add New Consultation for {patient?.full_name}</Typography>
             <Box display="flex" flexDirection="column" gap={2}>
               <TextField label="Date of Visit" type="datetime-local" value={newVisit.date_of_visit} onChange={(e) => setNewVisit({ ...newVisit, date_of_visit: handleDateChange(e.target.value) })} InputLabelProps={{ shrink: true }} inputProps={{ step: 1800 }} fullWidth sx={{ mb: 2 }} />
+
+              {/* Online payment fields for new consultation */}
+              {patient?.patient_type === 'online' && (
+                <Box sx={{ background: 'linear-gradient(135deg, #f0fdfe, #e0f7fa)', border: '1.5px solid #a5f3fc', borderRadius: 2, p: 2, mb: 2 }}>
+                  <Typography variant="subtitle2" sx={{ color: '#0891b2', mb: 1.5, display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                    <PaymentIcon fontSize="small" /> Order & Payment Details
+                  </Typography>
+                  <Grid container spacing={2}>
+                    <Grid item xs={12} sm={6}>
+                      <TextField label="Payment Date & Time *" type="datetime-local" value={newVisit.payment_datetime || ''} onChange={(e) => setNewVisit({ ...newVisit, payment_datetime: e.target.value })} InputLabelProps={{ shrink: true }} fullWidth required />
+                    </Grid>
+                    <Grid item xs={12} sm={6}>
+                      <TextField label="Amount Paid (₹) *" type="number" value={newVisit.amount_paid || ''} onChange={(e) => setNewVisit({ ...newVisit, amount_paid: e.target.value })} fullWidth required inputProps={{ min: 0, step: '0.01' }} />
+                    </Grid>
+                    <Grid item xs={12} sm={6}>
+                      <TextField label="Dispatch Date (optional)" type="date" value={newVisit.dispatch_date || ''} onChange={(e) => setNewVisit({ ...newVisit, dispatch_date: e.target.value })} InputLabelProps={{ shrink: true }} fullWidth helperText="Fill when order is shipped" />
+                    </Grid>
+                    <Grid item xs={12} sm={6}>
+                      <TextField label="Tracking ID (optional)" value={newVisit.tracking_id || ''} onChange={(e) => setNewVisit({ ...newVisit, tracking_id: e.target.value })} fullWidth placeholder="e.g. DTDC123456789IN" helperText="Fill when order is shipped" />
+                    </Grid>
+                  </Grid>
+                </Box>
+              )}
               <Box mb={2}>
                 <TextField select label="Treatment Type" value={TREATMENTS.includes(newVisit.treatment) ? newVisit.treatment : (newVisit.treatment ? 'Other' : '')} onChange={(e) => {
                   if (e.target.value === 'Other') {
@@ -442,6 +530,22 @@ export default function PatientDetail() {
                   </Box>
                 </Box>
               )}
+              {/* Blood Test Prescriptions — offline patients */}
+              {patient?.patient_type !== 'online' && (
+                <Box mt={2} mb={1}>
+                  <Box display="flex" alignItems="center" gap={1} mb={1}>
+                    <Box sx={{ width: 28, height: 28, borderRadius: 1, background: 'linear-gradient(135deg, #7c3aed, #6d28d9)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <span style={{ fontSize: 14 }}>🧪</span>
+                    </Box>
+                    <Typography variant="subtitle1" sx={{ fontWeight: 700, color: '#1e293b' }}>Blood Test Prescriptions</Typography>
+                  </Box>
+                  <BloodTestSelector
+                    selectedTests={newVisit.blood_tests || []}
+                    onTestsChange={(tests) => setNewVisit({ ...newVisit, blood_tests: tests })}
+                  />
+                </Box>
+              )}
+
               <Box mt={3} pt={2} sx={{ borderTop: '1px solid #f0f0f0' }}>
                 <Box display="flex" alignItems="center" gap={1} mb={2}>
                   <MedicalServicesIcon sx={{ color: '#1d4ed8' }} />
@@ -454,7 +558,7 @@ export default function PatientDetail() {
                 <Button variant="contained" onClick={submitVisit} disabled={submitting || !newVisit.treatment}>
                   {submitting ? 'Saving...' : 'Save Consultation'}
                 </Button>
-                <Button variant="outlined" onClick={() => { setNewVisit({ date_of_visit: '', doctor_notes: '', doctor_advice: '', treatment: '', photos: [] }); setSelectedMedicines([]) }}>Reset</Button>
+                <Button variant="outlined" onClick={() => { setNewVisit({ date_of_visit: '', doctor_notes: '', doctor_advice: '', treatment: '', photos: [], payment_datetime: '', amount_paid: '', dispatch_date: '', tracking_id: '' }); setSelectedMedicines([]) }}>Reset</Button>
               </Box>
             </Box>
           </Paper>
@@ -472,6 +576,43 @@ export default function PatientDetail() {
 
       <MedicinesPanel open={medicinesPanelOpen} onClose={() => setMedicinesPanelOpen(false)} />
 
+      {/* Dispatch Update Dialog */}
+      <Dialog open={dispatchDialog.open} onClose={() => setDispatchDialog({ open: false, visitId: null, dispatch_date: '', tracking_id: '' })} maxWidth="sm" fullWidth PaperProps={{ sx: { borderRadius: 3 } }}>
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+          <Box sx={{ width: 40, height: 40, borderRadius: 2, background: 'linear-gradient(135deg, #06b6d4, #0891b2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <LocalShippingIcon sx={{ color: '#fff', fontSize: 20 }} />
+          </Box>
+          <Box>
+            <Typography variant="h6" sx={{ fontWeight: 700, lineHeight: 1.2 }}>Update Dispatch Info</Typography>
+            <Typography variant="caption" sx={{ color: '#64748b' }}>Fill in when order is shipped</Typography>
+          </Box>
+        </DialogTitle>
+        <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 2 }}>
+          <TextField
+            label="Dispatch Date"
+            type="date"
+            value={dispatchDialog.dispatch_date}
+            onChange={(e) => setDispatchDialog(d => ({ ...d, dispatch_date: e.target.value }))}
+            InputLabelProps={{ shrink: true }}
+            fullWidth
+          />
+          <TextField
+            label="Tracking ID"
+            value={dispatchDialog.tracking_id}
+            onChange={(e) => setDispatchDialog(d => ({ ...d, tracking_id: e.target.value }))}
+            fullWidth
+            placeholder="e.g. DTDC123456789IN"
+          />
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2.5, gap: 1 }}>
+          <Button onClick={() => setDispatchDialog({ open: false, visitId: null, dispatch_date: '', tracking_id: '' })}>Cancel</Button>
+          <Button variant="contained" onClick={saveDispatch} disabled={dispatchSaving}
+            sx={{ background: 'linear-gradient(135deg, #06b6d4, #0891b2)', fontWeight: 700 }}>
+            {dispatchSaving ? 'Saving...' : 'Save Dispatch Info'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       <Dialog open={otherTreatmentDialogOpen} onClose={() => setOtherTreatmentDialogOpen(false)}>
         <DialogTitle>Specify Custom Treatment</DialogTitle>
         <DialogContent>
@@ -485,29 +626,266 @@ export default function PatientDetail() {
           }} variant="contained">OK</Button>
         </DialogActions>
       </Dialog>
+      {/* Lightbox dialog */}
+      <Dialog open={lightbox.open} onClose={() => setLightbox({ open: false, src: '' })} maxWidth="lg" fullWidth
+        PaperProps={{ sx: { background: '#000', borderRadius: 3 } }}>
+        <DialogActions sx={{ justifyContent: 'flex-end', p: 1 }}>
+          <Button onClick={() => setLightbox({ open: false, src: '' })} sx={{ color: '#fff', minWidth: 0 }}>✕ Close</Button>
+        </DialogActions>
+        <Box sx={{ display: 'flex', justifyContent: 'center', pb: 2, px: 2 }}>
+          <img src={lightbox.src} alt="full view" style={{ maxWidth: '100%', maxHeight: '80vh', borderRadius: 8, objectFit: 'contain' }} />
+        </Box>
+      </Dialog>
     </div>
   )
 }
 
-function CompareImages({ visits, a, b }) {
-  if (a === '' || b === '' || a == null || b == null) return null
-  const va = visits[parseInt(a)]
-  const vb = visits[parseInt(b)]
-  const ima = va && va.photos && va.photos[0]
-  const imb = vb && vb.photos && vb.photos[0]
-  if (!ima || !imb) return <Typography variant="body2" sx={{ color: 'gray' }}>No photos available for selected visits</Typography>
+
+function VisitPhotos({ photos, onExpand }) {
+  const [errors, setErrors] = useState({})
+  if (!photos || photos.length === 0) return null
+
+  // Ensure old photos without f_auto get the transformation so HEIC renders
+  const formattedPhotos = photos.map(url => 
+    url.includes('f_auto') ? url : url.replace('/upload/', '/upload/f_auto,q_auto/')
+  )
+
   return (
-    <Box mt={2} display="flex" gap={2}>
-      <Box sx={{ flex: 1 }}>
-        <Typography variant="caption"><strong>Visit A: {dayjs(va.date_of_visit).format('DD MMM YYYY')}</strong></Typography>
-        <img src={ima} alt="a" style={{ width: '100%', borderRadius: 4, border: '2px solid primary' }} />
-      </Box>
-      <Box sx={{ flex: 1 }}>
-        <Typography variant="caption"><strong>Visit B: {dayjs(vb.date_of_visit).format('DD MMM YYYY')}</strong></Typography>
-        <img src={imb} alt="b" style={{ width: '100%', borderRadius: 4 }} />
+    <Box mt={1.5}>
+      <Typography variant="caption" sx={{ fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+        📷 Photos ({photos.length})
+      </Typography>
+      <Box display="flex" gap={1.5} flexWrap="wrap" mt={0.75}>
+        {formattedPhotos.map((url, i) => (
+          <Box
+            key={i}
+            onClick={() => !errors[i] && onExpand(url)}
+            sx={{
+              position: 'relative',
+              cursor: errors[i] ? 'default' : 'zoom-in',
+              borderRadius: 2,
+              overflow: 'hidden',
+              border: '2px solid #e2e8f0',
+              '&:hover': { borderColor: '#6366f1', boxShadow: '0 4px 12px rgba(99,102,241,0.2)' },
+              transition: 'all 0.2s',
+              width: 140, height: 140,
+              background: '#f8fafc',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}
+          >
+            {errors[i] ? (
+              <Box textAlign="center" p={1}>
+                <Typography fontSize={28}>🖼️</Typography>
+                <Typography variant="caption" sx={{ color: '#94a3b8', display: 'block' }}>Image unavailable</Typography>
+              </Box>
+            ) : (
+              <>
+                <img
+                  src={url}
+                  alt={`photo ${i + 1}`}
+                  onError={() => setErrors(e => ({ ...e, [i]: true }))}
+                  style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                />
+                <Box sx={{
+                  position: 'absolute', bottom: 0, left: 0, right: 0,
+                  background: 'linear-gradient(transparent, rgba(0,0,0,0.5))',
+                  py: 0.5, textAlign: 'center',
+                }}>
+                  <Typography variant="caption" sx={{ color: '#fff', fontSize: '0.65rem' }}>
+                    Click to expand
+                  </Typography>
+                </Box>
+              </>
+            )}
+          </Box>
+        ))}
       </Box>
     </Box>
   )
 }
+
+function CompareImages({ visits, a, b, onExpand }) {
+  const [errA, setErrA] = useState(false)
+  const [errB, setErrB] = useState(false)
+
+  if (a === '' || b === '' || a == null || b == null) {
+    return (
+      <Box sx={{ textAlign: 'center', py: 4, color: '#94a3b8' }}>
+        <Typography fontSize={36}>🔍</Typography>
+        <Typography variant="body2">Select two visits above to compare their photos</Typography>
+      </Box>
+    )
+  }
+  const va = visits[parseInt(a)]
+  const vb = visits[parseInt(b)]
+  let ima = va?.photos?.[0]
+  let imb = vb?.photos?.[0]
+
+  // Ensure old photos without f_auto get the transformation so HEIC renders
+  if (ima && !ima.includes('f_auto')) ima = ima.replace('/upload/', '/upload/f_auto,q_auto/')
+  if (imb && !imb.includes('f_auto')) imb = imb.replace('/upload/', '/upload/f_auto,q_auto/')
+
+  if (!ima && !imb) return (
+    <Box sx={{ textAlign: 'center', py: 3, color: '#94a3b8' }}>
+      <Typography variant="body2">Neither selected visit has photos</Typography>
+    </Box>
+  )
+
+  const PhotoSide = ({ visit, img, label, err, onErr }) => (
+    <Box sx={{ flex: 1, minWidth: 0 }}>
+      <Box sx={{
+        background: label === 'BEFORE' ? '#fef2f2' : '#f0fdf4',
+        borderRadius: '8px 8px 0 0', px: 1.5, py: 0.75,
+        borderBottom: `3px solid ${label === 'BEFORE' ? '#ef4444' : '#22c55e'}`,
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between'
+      }}>
+        <Typography variant="caption" sx={{
+          fontWeight: 800, letterSpacing: 1,
+          color: label === 'BEFORE' ? '#dc2626' : '#16a34a'
+        }}>{label}</Typography>
+        <Typography variant="caption" sx={{ color: '#64748b' }}>
+          {dayjs(visit.date_of_visit).format('DD MMM YYYY')}
+        </Typography>
+      </Box>
+      <Box sx={{
+        background: '#0f172a', borderRadius: '0 0 8px 8px',
+        overflow: 'hidden', minHeight: 220,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        cursor: img && !err ? 'zoom-in' : 'default'
+      }} onClick={() => img && !err && onExpand(img)}>
+        {!img ? (
+          <Box textAlign="center" p={2}>
+            <Typography fontSize={32}>📷</Typography>
+            <Typography variant="caption" sx={{ color: '#64748b' }}>No photo for this visit</Typography>
+          </Box>
+        ) : err ? (
+          <Box textAlign="center" p={2}>
+            <Typography fontSize={32}>🖼️</Typography>
+            <Typography variant="caption" sx={{ color: '#64748b' }}>Image unavailable</Typography>
+          </Box>
+        ) : (
+          <img
+            src={img}
+            alt={label}
+            onError={onErr}
+            style={{ width: '100%', maxHeight: 320, objectFit: 'contain', display: 'block' }}
+          />
+        )}
+      </Box>
+      <Typography variant="caption" sx={{ color: '#64748b', display: 'block', mt: 0.5, px: 0.5 }}>
+        {visit.treatment}
+      </Typography>
+    </Box>
+  )
+
+  return (
+    <Box>
+      <Box display="flex" gap={2} mt={1}>
+        <PhotoSide visit={va} img={ima} label="BEFORE" err={errA} onErr={() => setErrA(true)} />
+        <Box display="flex" alignItems="center" sx={{ color: '#94a3b8', fontSize: 24, userSelect: 'none', flexShrink: 0 }}>→</Box>
+        <PhotoSide visit={vb} img={imb} label="AFTER" err={errB} onErr={() => setErrB(true)} />
+      </Box>
+      {(ima && imb && !errA && !errB) && (
+        <Typography variant="caption" sx={{ color: '#94a3b8', display: 'block', textAlign: 'center', mt: 1 }}>
+          💡 Click either image to view full size
+        </Typography>
+      )}
+    </Box>
+  )
+}
+
+
+function OnlineVisitInfo({ v, onUpdateDispatch }) {
+  const isDispatched = !!v.tracking_id
+  return (
+    <Box mt={1.5} sx={{
+      background: isDispatched
+        ? 'linear-gradient(135deg, #f0fdf4, #dcfce7)'
+        : 'linear-gradient(135deg, #f0fdfe, #e0f7fa)',
+      border: `1.5px solid ${isDispatched ? '#86efac' : '#a5f3fc'}`,
+      borderRadius: 2, p: 1.5,
+    }}>
+      {/* Payment row */}
+      <Box display="flex" flexWrap="wrap" gap={2} mb={1}>
+        <Box>
+          <Typography variant="caption" sx={{ color: '#64748b', display: 'block' }}>💳 Payment Date & Time</Typography>
+          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+            {v.payment_datetime ? dayjs(v.payment_datetime).format('DD MMM YYYY, h:mm A') : <em style={{ color: '#94a3b8' }}>Not recorded</em>}
+          </Typography>
+        </Box>
+        <Box>
+          <Typography variant="caption" sx={{ color: '#64748b', display: 'block' }}>💰 Amount Paid</Typography>
+          <Typography variant="body2" sx={{ fontWeight: 700, color: '#16a34a' }}>
+            {v.amount_paid ? `₹${Number(v.amount_paid).toLocaleString('en-IN')}` : <em style={{ color: '#94a3b8' }}>—</em>}
+          </Typography>
+        </Box>
+      </Box>
+
+      {/* Dispatch row */}
+      <Box display="flex" flexWrap="wrap" gap={2} alignItems="center">
+        <Box>
+          <Typography variant="caption" sx={{ color: '#64748b', display: 'block' }}>📅 Dispatch Date</Typography>
+          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+            {v.dispatch_date ? dayjs(v.dispatch_date).format('DD MMM YYYY') : <em style={{ color: '#94a3b8' }}>Not dispatched yet</em>}
+          </Typography>
+        </Box>
+        <Box>
+          <Typography variant="caption" sx={{ color: '#64748b', display: 'block' }}>🚚 Tracking ID</Typography>
+          <Typography variant="body2" sx={{ fontWeight: 600, fontFamily: 'monospace', color: isDispatched ? '#0891b2' : undefined }}>
+            {v.tracking_id || <em style={{ color: '#94a3b8' }}>Not available yet</em>}
+          </Typography>
+        </Box>
+        <Box sx={{ ml: 'auto' }}>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<LocalShippingIcon />}
+            onClick={onUpdateDispatch}
+            sx={{
+              borderColor: '#06b6d4', color: '#0891b2', fontWeight: 600,
+              '&:hover': { background: '#f0fdfe', borderColor: '#0891b2' }
+            }}
+          >
+            {isDispatched ? 'Update Dispatch' : 'Mark Dispatched'}
+          </Button>
+        </Box>
+      </Box>
+    </Box>
+  )
+}
+
+function BloodTestBadges({ tests }) {
+  if (!tests || tests.length === 0) return null
+  return (
+    <Box mt={1.5} sx={{
+      background: 'linear-gradient(135deg, #f5f3ff, #ede9fe)',
+      border: '1.5px solid #c4b5fd',
+      borderRadius: 2, p: 1.5,
+    }}>
+      <Typography variant="caption" sx={{ color: '#7c3aed', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, display: 'block', mb: 1 }}>
+        🧪 Blood Tests Prescribed ({tests.length})
+      </Typography>
+      <Box display="flex" flexWrap="wrap" gap={0.6}>
+        {tests.map((t, i) => (
+          <Chip
+            key={i}
+            label={t}
+            size="small"
+            sx={{
+              background: '#7c3aed',
+              color: '#fff',
+              fontWeight: 600,
+              fontSize: '0.72rem',
+            }}
+          />
+        ))}
+      </Box>
+    </Box>
+  )
+}
+
+
+
+
 
 
