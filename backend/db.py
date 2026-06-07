@@ -49,11 +49,32 @@ _db = _client[DB_NAME]
 db = _db
 
 
+def _deduplicate_reminder_logs():
+    """Remove duplicate reminder_logs documents that would block unique index creation."""
+    try:
+        pipeline = [
+            {"$group": {
+                "_id": {"patient_id": "$patient_id", "appointment_date": "$appointment_date", "type": "$type"},
+                "ids": {"$push": "$_id"},
+                "count": {"$sum": 1}
+            }},
+            {"$match": {"count": {"$gt": 1}}}
+        ]
+        duplicates = list(db.reminder_logs.aggregate(pipeline))
+        for dup in duplicates:
+            ids_to_remove = dup["ids"][1:]  # keep first, remove rest
+            db.reminder_logs.delete_many({"_id": {"$in": ids_to_remove}})
+        if duplicates:
+            print(f"[DB] Removed {sum(len(d['ids'])-1 for d in duplicates)} duplicate reminder_log entries.")
+    except Exception:
+        traceback.print_exc()
+
+
 def ensure_indexes():
-    """Create indexes for fast queries — called once at startup.
+    """Create indexes for fast queries -- called once at startup.
     Safe to call multiple times (MongoDB ignores existing indexes).
     """
-    # ── Patients ──────────────────────────────────────────────────
+    # -- Patients --
     db.patients.create_index("patient_id", unique=True, background=True)
     db.patients.create_index("full_name", background=True)
     db.patients.create_index("whatsapp", background=True)
@@ -61,8 +82,10 @@ def ensure_indexes():
     db.patients.create_index("patient_type", background=True)
     db.patients.create_index("created_at", background=True)
 
-    # ── Reminder deduplication ────────────────────────────────────
+    # -- Reminder deduplication --
     # Prevents sending duplicate reminders for the same appointment
+    # First clean up any existing duplicates so the unique index can be created
+    _deduplicate_reminder_logs()
     db.reminder_logs.create_index(
         [("patient_id", 1), ("appointment_date", 1), ("type", 1)],
         unique=True,
@@ -85,11 +108,11 @@ def ensure_indexes():
     db.visit_archive.create_index("patient_id", background=True)
     db.visit_archive.create_index("archived_at", background=True)
 
-    print("✅ MongoDB indexes ensured.")
+    print("[DB] MongoDB indexes ensured.")
 
 
 try:
     ensure_indexes()
 except Exception:
     traceback.print_exc()
-    print("⚠️  Warning: Could not create indexes — queries may be slow.")
+    print("[DB] Warning: Could not create indexes - queries may be slow.")
