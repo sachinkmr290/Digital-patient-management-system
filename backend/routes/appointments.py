@@ -54,12 +54,20 @@ def list_appointments():
     if patient_id:
         q["patient_id"] = patient_id
     # TODO: filter by date range when date format known
-    cursor = db.appointments.find(q).sort("date_time", 1)
+
+    # FIX 6: Paginate to avoid loading all appointments into memory
+    page = int(request.args.get("page", 1))
+    per_page = int(request.args.get("per_page", 20))
+    skip = (page - 1) * per_page
+
+    cursor = db.appointments.find(q).sort("date_time", 1).skip(skip).limit(per_page)
     items = []
     for a in cursor:
         a["_id"] = str(a.get("_id"))
         items.append(a)
-    return jsonify({"items": items})
+
+    total = db.appointments.count_documents(q)
+    return jsonify({"items": items, "total": total, "page": page, "per_page": per_page})
 
 
 @appointments_bp.route("/<id>", methods=["PUT"])

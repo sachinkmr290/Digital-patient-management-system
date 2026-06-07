@@ -28,7 +28,17 @@ def find_and_send_reminders(lookahead_hours: int = REMINDER_LOOKAHEAD_HOURS):
     until_iso = until.isoformat()
 
     q = {"next_visit": {"$gte": now_iso, "$lte": until_iso}}
-    candidates = list(db.patients.find(q))
+    # FIX 2: Projection — fetch only the fields we actually need.
+    # Avoids pulling full patient docs (embedded visits, photos, videos).
+    projection = {
+        "patient_id": 1,
+        "full_name": 1,
+        "whatsapp": 1,
+        "email": 1,
+        "next_visit": 1,
+        "visits": {"$slice": -1},   # only the most recent visit
+    }
+    candidates = list(db.patients.find(q, projection))
     summary = {"checked": len(candidates), "sent": 0, "skipped": 0, "errors": 0, "details": []}
 
     for p in candidates:
@@ -160,6 +170,19 @@ def find_and_send_reminders(lookahead_hours: int = REMINDER_LOOKAHEAD_HOURS):
 
 
 def _job():
+    """Scheduled job — only runs during IST business hours (8 AM – 9 PM)."""
+    from datetime import datetime as _dt
+    # Convert UTC to IST (UTC+5:30) using simple offset
+    now_utc = _dt.utcnow()
+    ist_total_minutes = now_utc.hour * 60 + now_utc.minute + 330  # +5h30m
+    ist_hour = (ist_total_minutes // 60) % 24
+
+    if not (8 <= ist_hour <= 21):
+        logging.getLogger(__name__).info(
+            "Skipping reminder job — outside business hours (IST %02d:00)", ist_hour
+        )
+        return
+
     logging.getLogger(__name__).info("Running scheduled reminder job")
     try:
         res = find_and_send_reminders()

@@ -6,6 +6,7 @@ import {
   Chip, Divider
 } from '@mui/material'
 import CameraAltIcon from '@mui/icons-material/CameraAlt'
+import VideocamIcon from '@mui/icons-material/Videocam'
 import MedicalServicesIcon from '@mui/icons-material/MedicalServices'
 import LocalShippingIcon from '@mui/icons-material/LocalShipping'
 import PaymentIcon from '@mui/icons-material/Payment'
@@ -15,6 +16,7 @@ import { useAuth } from '../auth/AuthProvider'
 import MedicinesSelector from '../components/MedicinesSelector'
 import MedicinesPanel from '../components/MedicinesPanel'
 import BloodTestSelector from '../components/BloodTestSelector'
+import { uploadCloudinaryMedia } from '../utils/cloudinaryUpload'
 
 const TREATMENTS = [
   'Cupping',
@@ -65,11 +67,12 @@ export default function PatientDetail() {
   const [form, setForm] = useState({})
   const [tabValue, setTabValue] = useState(0)
   const [compare, setCompare] = useState({ a: null, b: null })
+  const [videoCompare, setVideoCompare] = useState({ a: null, b: null })
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [successMessage, setSuccessMessage] = useState('')
   const [newVisit, setNewVisit] = useState({
     date_of_visit: '', doctor_notes: '', doctor_advice: '', treatment: '',
-    photos: [], payment_datetime: '', amount_paid: '', dispatch_date: '', tracking_id: '',
+    photos: [], videos: [], payment_datetime: '', amount_paid: '', dispatch_date: '', tracking_id: '',
     blood_tests: []
   })
   const [uploading, setUploading] = useState(false)
@@ -136,34 +139,39 @@ export default function PatientDetail() {
     } catch (e) { alert('Save failed') }
   }
 
-  const handleFile = async (e) => {
+  const emptyNewVisit = {
+    date_of_visit: '', doctor_notes: '', doctor_advice: '', treatment: '',
+    photos: [], videos: [], payment_datetime: '', amount_paid: '', dispatch_date: '', tracking_id: '',
+    blood_tests: []
+  }
+
+  const handleMediaFile = async (e, mediaType) => {
     const file = e.target.files[0]
+    e.target.value = ''
     if (!file) return
-    const cloudName = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME
-    const uploadPreset = import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET
-    if (!cloudName || !uploadPreset) {
-      alert('Cloudinary not configured')
+
+    if (mediaType === 'photo' && !file.type.startsWith('image/')) {
+      alert('Please select an image file.')
       return
     }
-    const fd = new FormData()
-    fd.append('file', file)
-    fd.append('upload_preset', uploadPreset)
+    if (mediaType === 'video' && !file.type.startsWith('video/')) {
+      alert('Please select a video file.')
+      return
+    }
+
     setUploading(true)
     try {
-      const res = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/upload`, { method: 'POST', body: fd })
-      const data = await res.json()
-      if (data.secure_url) {
-        // Add f_auto,q_auto so Cloudinary converts HEIC/HEIF to browser-compatible format (WebP/JPEG)
-        const url = data.secure_url.replace('/upload/', '/upload/f_auto,q_auto/')
-        setNewVisit((v) => ({ ...v, photos: [...v.photos, url] }))
-        alert('Photo uploaded successfully')
+      const uploaded = await uploadCloudinaryMedia(file)
+      if (mediaType === 'video') {
+        setNewVisit((v) => ({ ...v, videos: [...(v.videos || []), uploaded.url] }))
+        alert('Video uploaded successfully')
       } else {
-        console.error('Cloudinary error:', data)
-        alert(`Upload failed: ${data.error?.message || 'Unknown error'}`)
+        setNewVisit((v) => ({ ...v, photos: [...v.photos, uploaded.url] }))
+        alert('Photo uploaded successfully')
       }
     } catch (err) {
       console.error(err)
-      alert('Upload error')
+      alert(err.message || 'Upload error')
     } finally {
       setUploading(false)
     }
@@ -184,11 +192,7 @@ export default function PatientDetail() {
       const payload = { visit: { ...newVisit, medicines: selectedMedicines } }
       await api.put(`/api/patients/${patient_id}`, payload)
       setSuccessMessage('Visit added successfully! Confirmation sent to patient.')
-      setNewVisit({
-        date_of_visit: '', doctor_notes: '', doctor_advice: '', treatment: '',
-        photos: [], payment_datetime: '', amount_paid: '', dispatch_date: '', tracking_id: '',
-        blood_tests: []
-      })
+      setNewVisit(emptyNewVisit)
       setSelectedMedicines([])
       setTimeout(() => {
         loadPatient()
@@ -204,6 +208,10 @@ export default function PatientDetail() {
 
   const removePhotoFromNewVisit = (idx) => {
     setNewVisit(v => ({ ...v, photos: v.photos.filter((_, i) => i !== idx) }))
+  }
+
+  const removeVideoFromNewVisit = (idx) => {
+    setNewVisit(v => ({ ...v, videos: (v.videos || []).filter((_, i) => i !== idx) }))
   }
 
   const remove = async () => {
@@ -235,6 +243,24 @@ export default function PatientDetail() {
   }
 
   const visits = (patient && patient.visits) ? [...patient.visits].sort((a, b) => new Date(b.date_of_visit) - new Date(a.date_of_visit)) : []
+  const videoCompareOptions = [
+    ...visits.flatMap((visit, visitIndex) => (visit.videos || []).map((src, videoIndex) => ({
+      key: `visit:${visitIndex}:${videoIndex}`,
+      src,
+      visit,
+      label: `${dayjs(visit.date_of_visit).format('DD MMM YYYY')} - ${visit.treatment || 'Visit'}${(visit.videos || []).length > 1 ? ` - Video ${videoIndex + 1}` : ''}`,
+    }))),
+    ...(newVisit.videos || []).map((src, videoIndex) => ({
+      key: `draft:${videoIndex}`,
+      src,
+      visit: {
+        ...newVisit,
+        date_of_visit: newVisit.date_of_visit || new Date().toISOString(),
+        treatment: newVisit.treatment || 'Current consultation draft',
+      },
+      label: `Current consultation draft${newVisit.videos.length > 1 ? ` - Video ${videoIndex + 1}` : ''}`,
+    })),
+  ]
 
   return (
     <div>
@@ -334,6 +360,9 @@ export default function PatientDetail() {
                           {(v.photos || []).length > 0 && (
                             <VisitPhotos photos={v.photos} onExpand={(src) => setLightbox({ open: true, src })} />
                           )}
+                          {(v.videos || []).length > 0 && (
+                            <VisitVideos videos={v.videos} />
+                          )}
                           {(v.medicines || []).length > 0 && (
                             <Box mt={2} sx={{ backgroundColor: '#f9f9f9', p: 1.5, borderRadius: 1, border: '2px solid #2196F3' }}>
                               <Box display="flex" alignItems="center" gap={1} mb={1}>
@@ -389,6 +418,9 @@ export default function PatientDetail() {
                       {(v.photos || []).length > 0 && (
                         <VisitPhotos photos={v.photos} onExpand={(src) => setLightbox({ open: true, src })} />
                       )}
+                      {(v.videos || []).length > 0 && (
+                        <VisitVideos videos={v.videos} />
+                      )}
                       {(v.medicines || []).length > 0 && (
                         <Box mt={2} sx={{ backgroundColor: '#f9f9f9', p: 1.5, borderRadius: 1, border: '2px solid #2196F3' }}>
                           <Box display="flex" alignItems="center" gap={1} mb={1}>
@@ -418,7 +450,8 @@ export default function PatientDetail() {
               {/* Before/After Comparison */}
               <Paper sx={{ p: 2 }}>
                 <Typography variant="h6" sx={{ fontWeight: 700 }}>Before / After Comparison</Typography>
-                <Typography variant="body2" sx={{ color: '#64748b', mb: 2 }}>Select two visits with photos to compare</Typography>
+                <Typography variant="body2" sx={{ color: '#64748b', mb: 2 }}>Select two visits with photos or videos to compare</Typography>
+                <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>Photo Comparison</Typography>
                 <Box display="flex" gap={1} mb={2}>
                   <TextField select label="Before (Visit A)" value={compare.a !== null ? compare.a : ''} onChange={(e) => setCompare(c => ({ ...c, a: e.target.value }))} size="small" sx={{ flex: 1 }}>
                     <MenuItem value="">Select Visit</MenuItem>
@@ -440,6 +473,29 @@ export default function PatientDetail() {
                   </TextField>
                 </Box>
                 <CompareImages visits={visits} a={compare.a} b={compare.b} onExpand={(src) => setLightbox({ open: true, src })} />
+
+                <Divider sx={{ my: 3 }} />
+
+                <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>Video Comparison</Typography>
+                <Box display="flex" gap={1} mb={2}>
+                  <TextField select label="Video A" value={videoCompare.a !== null ? videoCompare.a : ''} onChange={(e) => setVideoCompare(c => ({ ...c, a: e.target.value }))} size="small" sx={{ flex: 1 }}>
+                    <MenuItem value="">Select Visit</MenuItem>
+                    {videoCompareOptions.map(({ key, label }) => (
+                      <MenuItem key={key} value={key}>
+                        {label}
+                      </MenuItem>
+                    ))}
+                  </TextField>
+                  <TextField select label="Video B" value={videoCompare.b !== null ? videoCompare.b : ''} onChange={(e) => setVideoCompare(c => ({ ...c, b: e.target.value }))} size="small" sx={{ flex: 1 }}>
+                    <MenuItem value="">Select Visit</MenuItem>
+                    {videoCompareOptions.map(({ key, label }) => (
+                      <MenuItem key={key} value={key}>
+                        {label}
+                      </MenuItem>
+                    ))}
+                  </TextField>
+                </Box>
+                <CompareVideos options={videoCompareOptions} a={videoCompare.a} b={videoCompare.b} />
               </Paper>
             </Grid>
           </Grid>
@@ -509,11 +565,17 @@ export default function PatientDetail() {
               </Box>
 
               <Box sx={{ mb: 3 }}>
+                <Box display="flex" gap={1} flexWrap="wrap" alignItems="center">
                 <Button variant="outlined" component="label" startIcon={<CameraAltIcon />} disabled={uploading}>
                   UPLOAD PHOTO
-                  <input type="file" hidden onChange={handleFile} />
+                  <input type="file" hidden accept="image/*" onChange={(e) => handleMediaFile(e, 'photo')} />
+                </Button>
+                <Button variant="outlined" component="label" startIcon={<VideocamIcon />} disabled={uploading}>
+                  UPLOAD VIDEO
+                  <input type="file" hidden accept="video/*" onChange={(e) => handleMediaFile(e, 'video')} />
                 </Button>
                 {uploading && <CircularProgress size={20} sx={{ ml: 1 }} />}
+                </Box>
               </Box>
 
 
@@ -525,6 +587,19 @@ export default function PatientDetail() {
                       <Box key={i} sx={{ position: 'relative' }}>
                         <img src={u} alt={`photo-${i}`} style={{ height: 100, borderRadius: 4, border: '1px solid #ccc' }} />
                         <Button size="small" color="error" onClick={() => removePhotoFromNewVisit(i)} sx={{ position: 'absolute', top: -8, right: -8, minWidth: 'auto', width: 24, height: 24 }}>✕</Button>
+                      </Box>
+                    ))}
+                  </Box>
+                </Box>
+              )}
+              {(newVisit.videos || []).length > 0 && (
+                <Box>
+                  <Typography variant="subtitle2" sx={{ mb: 1 }}>Uploaded Videos:</Typography>
+                  <Box display="flex" gap={1} flexWrap="wrap">
+                    {newVisit.videos.map((u, i) => (
+                      <Box key={i} sx={{ position: 'relative', width: 180, height: 110, borderRadius: 1, overflow: 'hidden', border: '1px solid #ccc', background: '#0f172a' }}>
+                        <video src={u} controls muted preload="metadata" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                        <Button size="small" color="error" onClick={() => removeVideoFromNewVisit(i)} sx={{ position: 'absolute', top: -8, right: -8, minWidth: 'auto', width: 24, height: 24, background: '#fff' }}>âœ•</Button>
                       </Box>
                     ))}
                   </Box>
@@ -558,7 +633,7 @@ export default function PatientDetail() {
                 <Button variant="contained" onClick={submitVisit} disabled={submitting || !newVisit.treatment}>
                   {submitting ? 'Saving...' : 'Save Consultation'}
                 </Button>
-                <Button variant="outlined" onClick={() => { setNewVisit({ date_of_visit: '', doctor_notes: '', doctor_advice: '', treatment: '', photos: [], payment_datetime: '', amount_paid: '', dispatch_date: '', tracking_id: '' }); setSelectedMedicines([]) }}>Reset</Button>
+                <Button variant="outlined" onClick={() => { setNewVisit(emptyNewVisit); setSelectedMedicines([]) }}>Reset</Button>
               </Box>
             </Box>
           </Paper>
@@ -704,6 +779,40 @@ function VisitPhotos({ photos, onExpand }) {
   )
 }
 
+function VisitVideos({ videos }) {
+  if (!videos || videos.length === 0) return null
+
+  return (
+    <Box mt={1.5}>
+      <Typography variant="caption" sx={{ fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+        Videos ({videos.length})
+      </Typography>
+      <Box display="flex" gap={1.5} flexWrap="wrap" mt={0.75}>
+        {videos.map((url, i) => (
+          <Box
+            key={i}
+            sx={{
+              borderRadius: 2,
+              overflow: 'hidden',
+              border: '2px solid #e2e8f0',
+              width: 220,
+              maxWidth: '100%',
+              background: '#0f172a',
+            }}
+          >
+            <video
+              src={url}
+              controls
+              preload="metadata"
+              style={{ width: '100%', height: 140, objectFit: 'cover', display: 'block' }}
+            />
+          </Box>
+        ))}
+      </Box>
+    </Box>
+  )
+}
+
 function CompareImages({ visits, a, b, onExpand }) {
   const [errA, setErrA] = useState(false)
   const [errB, setErrB] = useState(false)
@@ -794,6 +903,96 @@ function CompareImages({ visits, a, b, onExpand }) {
   )
 }
 
+function CompareVideos({ options, a, b }) {
+  if (!options || options.length === 0) {
+    return (
+      <Box sx={{ textAlign: 'center', py: 3, color: '#94a3b8' }}>
+        <Typography variant="body2">No visit videos are available yet</Typography>
+      </Box>
+    )
+  }
+
+  if (a === '' || b === '' || a == null || b == null) {
+    return (
+      <Box sx={{ textAlign: 'center', py: 4, color: '#94a3b8' }}>
+        <Typography variant="body2">Select two visits above to compare their videos</Typography>
+      </Box>
+    )
+  }
+
+  const optionA = options.find((option) => option.key === a)
+  const optionB = options.find((option) => option.key === b)
+  const va = optionA?.visit
+  const vb = optionB?.visit
+  const videoA = optionA?.src
+  const videoB = optionB?.src
+
+  if (!videoA && !videoB) {
+    return (
+      <Box sx={{ textAlign: 'center', py: 3, color: '#94a3b8' }}>
+        <Typography variant="body2">Neither selected visit has a video</Typography>
+      </Box>
+    )
+  }
+
+  const VideoSide = ({ visit, src, label }) => (
+    <Box sx={{ flex: 1, minWidth: { xs: '100%', sm: 0 } }}>
+      <Box sx={{
+        background: label === 'VIDEO A' ? '#eff6ff' : '#f0fdf4',
+        borderRadius: '8px 8px 0 0',
+        px: 1.5,
+        py: 0.75,
+        borderBottom: `3px solid ${label === 'VIDEO A' ? '#2563eb' : '#22c55e'}`,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 1,
+      }}>
+        <Typography variant="caption" sx={{
+          fontWeight: 800,
+          color: label === 'VIDEO A' ? '#1d4ed8' : '#16a34a',
+        }}>{label}</Typography>
+        <Typography variant="caption" sx={{ color: '#64748b' }}>
+          {visit?.date_of_visit ? dayjs(visit.date_of_visit).format('DD MMM YYYY') : ''}
+        </Typography>
+      </Box>
+      <Box sx={{
+        background: '#0f172a',
+        borderRadius: '0 0 8px 8px',
+        overflow: 'hidden',
+        minHeight: 220,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}>
+        {src ? (
+          <video
+            src={src}
+            controls
+            preload="metadata"
+            style={{ width: '100%', maxHeight: 320, objectFit: 'contain', display: 'block' }}
+          />
+        ) : (
+          <Box textAlign="center" p={2}>
+            <Typography variant="caption" sx={{ color: '#64748b' }}>No video for this visit</Typography>
+          </Box>
+        )}
+      </Box>
+      <Typography variant="caption" sx={{ color: '#64748b', display: 'block', mt: 0.5, px: 0.5 }}>
+        {visit?.treatment}
+      </Typography>
+    </Box>
+  )
+
+  return (
+    <Box>
+      <Box display="flex" flexWrap="wrap" gap={2} mt={1}>
+        <VideoSide visit={va} src={videoA} label="VIDEO A" />
+        <VideoSide visit={vb} src={videoB} label="VIDEO B" />
+      </Box>
+    </Box>
+  )
+}
 
 function OnlineVisitInfo({ v, onUpdateDispatch }) {
   const isDispatched = !!v.tracking_id

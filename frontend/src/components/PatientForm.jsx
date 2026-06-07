@@ -10,6 +10,7 @@ import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import api from '../api'
 import MedicinesSelector from './MedicinesSelector'
 import BloodTestSelector from './BloodTestSelector'
+import { uploadCloudinaryMedia } from '../utils/cloudinaryUpload'
 import { useNavigate } from 'react-router-dom'
 
 const genders = [
@@ -75,6 +76,7 @@ export default function PatientForm({ mode = 'offline' }) {
   const isOnline = mode === 'online'
   const [form, setForm] = useState(EMPTY_FORM)
   const [photos, setPhotos] = useState([])
+  const [videos, setVideos] = useState([])
   const [selectedMedicines, setSelectedMedicines] = useState([])
   const [loading, setLoading] = useState(false)
   const [selectedBloodTests, setSelectedBloodTests] = useState([])
@@ -88,34 +90,33 @@ export default function PatientForm({ mode = 'offline' }) {
 
   const navigate = useNavigate()
 
-  const handleFile = async (e) => {
+  const handleMediaFile = async (e, mediaType) => {
     const file = e.target.files[0]
+    e.target.value = ''
     if (!file) return
-    const cloudName = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME
-    const uploadPreset = import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET
-    if (!cloudName || !uploadPreset) {
-      alert('Cloudinary not configured in frontend .env')
+
+    if (mediaType === 'photo' && !file.type.startsWith('image/')) {
+      alert('Please select an image file.')
       return
     }
-    const fd = new FormData()
-    fd.append('file', file)
-    fd.append('upload_preset', uploadPreset)
+    if (mediaType === 'video' && !file.type.startsWith('video/')) {
+      alert('Please select a video file.')
+      return
+    }
+
     setLoading(true)
     try {
-      const res = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/upload`, { method: 'POST', body: fd })
-      const data = await res.json()
-      if (data.secure_url) {
-        // Add f_auto,q_auto so Cloudinary converts HEIC/HEIF to browser-compatible format (WebP/JPEG)
-        const url = data.secure_url.replace('/upload/', '/upload/f_auto,q_auto/')
-        setPhotos((p) => [...p, url])
-        alert('Photo uploaded successfully')
+      const uploaded = await uploadCloudinaryMedia(file)
+      if (mediaType === 'video') {
+        setVideos((v) => [...v, uploaded.url])
+        alert('Video uploaded successfully')
       } else {
-        console.error('Cloudinary error:', data)
-        alert(`Upload failed: ${data.error?.message || 'Unknown error'}`)
+        setPhotos((p) => [...p, uploaded.url])
+        alert('Photo uploaded successfully')
       }
     } catch (err) {
       console.error(err)
-      alert('Upload error')
+      alert(err.message || 'Upload error')
     } finally {
       setLoading(false)
     }
@@ -132,11 +133,12 @@ export default function PatientForm({ mode = 'offline' }) {
       return
     }
     try {
-      const payload = { ...form, photos, medicines: selectedMedicines, patient_type: mode, blood_tests: selectedBloodTests }
+      const payload = { ...form, photos, videos, medicines: selectedMedicines, patient_type: mode, blood_tests: selectedBloodTests }
       const res = await api.post('/api/patients', payload)
       setSuccessDialog({ open: true, patientId: res.data.patient_id, name: form.full_name })
       setForm(EMPTY_FORM)
       setPhotos([])
+      setVideos([])
       setSelectedMedicines([])
       setSelectedBloodTests([])
     } catch (err) {
@@ -328,8 +330,8 @@ export default function PatientForm({ mode = 'offline' }) {
             </>
           )}
 
-          {/* Photos */}
-          <Typography variant="h6" mt={2} mb={1}>Photos</Typography>
+          {/* Photos & Videos */}
+          <Typography variant="h6" mt={2} mb={1}>Photos & Videos</Typography>
           <Box mb={2}>
             {photos.length > 0 && (
               <Box display="flex" gap={1} flexWrap="wrap" mb={2}>
@@ -338,10 +340,25 @@ export default function PatientForm({ mode = 'offline' }) {
                 ))}
               </Box>
             )}
+            {videos.length > 0 && (
+              <Box display="flex" gap={1} flexWrap="wrap" mb={2}>
+                {videos.map((v, i) => (
+                  <Box key={i} sx={{ width: 140, height: 90, borderRadius: 1, overflow: 'hidden', border: '1px solid #e2e8f0', background: '#0f172a' }}>
+                    <video src={v} controls muted preload="metadata" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                  </Box>
+                ))}
+              </Box>
+            )}
+            <Box display="flex" gap={1} flexWrap="wrap">
             <Button variant="contained" component="label" disabled={loading} sx={{ mb: 2 }}>
               Upload Photo
-              <input hidden type="file" onChange={handleFile} accept="image/*" />
+              <input hidden type="file" onChange={(e) => handleMediaFile(e, 'photo')} accept="image/*" />
             </Button>
+            <Button variant="outlined" component="label" disabled={loading} sx={{ mb: 2 }}>
+              Upload Video
+              <input hidden type="file" onChange={(e) => handleMediaFile(e, 'video')} accept="video/*" />
+            </Button>
+            </Box>
           </Box>
 
           <Box mt={3} pt={2} sx={{ borderTop: '1px solid #f0f0f0' }}>

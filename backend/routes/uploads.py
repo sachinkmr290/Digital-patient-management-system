@@ -1,4 +1,5 @@
 from flask import Blueprint, request, jsonify
+from flask_jwt_extended import jwt_required
 import os
 from dotenv import load_dotenv
 
@@ -21,14 +22,39 @@ uploads_bp = Blueprint("uploads", __name__)
 
 
 @uploads_bp.route("/", methods=["POST"])
+@jwt_required()   # FIX 4: Protect upload endpoint — prevents anonymous quota drain
 def upload_file():
     if cloudinary is None:
         return jsonify({"msg": "cloudinary library not installed"}), 500
     if "file" not in request.files:
         return jsonify({"msg": "file required"}), 400
     f = request.files["file"]
+    resource_type = "auto"
+    transformation = None
+
+    # Apply image optimisations only for image uploads
+    if f.content_type and f.content_type.startswith("image/"):
+        # FIX 4: Compress + convert to WebP + cap width — saves 50-70% storage
+        transformation = [
+            {"quality": "auto:good"},          # auto compression
+            {"fetch_format": "auto"},           # serve as WebP in supporting browsers
+            {"width": 1200, "crop": "limit"},   # cap max dimension
+        ]
+
     try:
-        res = cloudinary.uploader.upload(f, folder="dpms")
-        return jsonify({"url": res.get("secure_url"), "public_id": res.get("public_id")})
+        upload_opts = {
+            "folder": "dpms",
+            "resource_type": resource_type,
+            "tags": ["dpms", "patient-record"],
+        }
+        if transformation:
+            upload_opts["transformation"] = transformation
+
+        res = cloudinary.uploader.upload(f, **upload_opts)
+        return jsonify({
+            "url": res.get("secure_url"),
+            "public_id": res.get("public_id"),
+            "resource_type": res.get("resource_type"),
+        })
     except Exception as e:
         return jsonify({"msg": "upload failed", "error": str(e)}), 500

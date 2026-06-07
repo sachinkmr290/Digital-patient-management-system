@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { Dialog, DialogTitle, DialogContent, DialogActions, Button, TextField, MenuItem, Box, Chip, Typography } from '@mui/material'
 import api from '../api'
+import { uploadCloudinaryMedia } from '../utils/cloudinaryUpload'
 
 const TREATMENTS = [
   'Cupping',
@@ -23,7 +24,7 @@ const ADVICE_OPTIONS = [
 ]
 
 export default function VisitForm({ open, onClose, patientId, onCreated }) {
-  const [visit, setVisit] = useState({ date_of_visit: '', doctor_notes: '', doctor_advice: '', treatment_type: '', photos: [] })
+  const [visit, setVisit] = useState({ date_of_visit: '', doctor_notes: '', doctor_advice: '', treatment_type: '', photos: [], videos: [] })
   const [uploading, setUploading] = useState(false)
   const [otherTreatmentDialogOpen, setOtherTreatmentDialogOpen] = useState(false)
   const [otherTreatment, setOtherTreatment] = useState('')
@@ -46,31 +47,33 @@ export default function VisitForm({ open, onClose, patientId, onCreated }) {
     return val;
   }
 
-  const handleFile = async (e) => {
+  const handleMediaFile = async (e, mediaType) => {
     const file = e.target.files[0]
+    e.target.value = ''
     if (!file) return
-    const cloudName = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME
-    const uploadPreset = import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET
-    if (!cloudName || !uploadPreset) {
-      alert('Cloudinary not configured')
+
+    if (mediaType === 'photo' && !file.type.startsWith('image/')) {
+      alert('Please select an image file.')
       return
     }
-    const fd = new FormData()
-    fd.append('file', file)
-    fd.append('upload_preset', uploadPreset)
+    if (mediaType === 'video' && !file.type.startsWith('video/')) {
+      alert('Please select a video file.')
+      return
+    }
+
     setUploading(true)
     try {
-      const res = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/upload`, { method: 'POST', body: fd })
-      const data = await res.json()
-      if (data.secure_url) {
-        setVisit((v) => ({ ...v, photos: [...v.photos, data.secure_url] }))
-        alert('Photo uploaded successfully')
+      const uploaded = await uploadCloudinaryMedia(file)
+      if (mediaType === 'video') {
+        setVisit((v) => ({ ...v, videos: [...(v.videos || []), uploaded.url] }))
+        alert('Video uploaded successfully')
       } else {
-        alert('Upload failed')
+        setVisit((v) => ({ ...v, photos: [...v.photos, uploaded.url] }))
+        alert('Photo uploaded successfully')
       }
     } catch (err) {
       console.error(err)
-      alert('Upload error')
+      alert(err.message || 'Upload error')
     } finally {
       setUploading(false)
     }
@@ -127,8 +130,22 @@ export default function VisitForm({ open, onClose, patientId, onCreated }) {
               <Typography variant="caption" color="primary">Custom: {visit.treatment_type}</Typography>
             )}
           </Box>
-          <input type="file" onChange={handleFile} />
-          {visit.photos.map((u,i)=>(<img key={i} src={u} alt="p" style={{height:80, marginRight:8}}/>))}
+          <Box display="flex" gap={1} flexWrap="wrap">
+            <Button variant="outlined" component="label" disabled={uploading}>
+              Upload Photo
+              <input type="file" hidden accept="image/*" onChange={(e) => handleMediaFile(e, 'photo')} />
+            </Button>
+            <Button variant="outlined" component="label" disabled={uploading}>
+              Upload Video
+              <input type="file" hidden accept="video/*" onChange={(e) => handleMediaFile(e, 'video')} />
+            </Button>
+          </Box>
+          <Box display="flex" gap={1} flexWrap="wrap">
+            {visit.photos.map((u,i)=>(<img key={`photo-${i}`} src={u} alt="p" style={{height:80, marginRight:8}}/>))}
+            {(visit.videos || []).map((u,i)=>(
+              <video key={`video-${i}`} src={u} controls muted preload="metadata" style={{height:80, maxWidth:140, marginRight:8, background:'#0f172a'}}/>
+            ))}
+          </Box>
         </Box>
       </DialogContent>
       <DialogActions>

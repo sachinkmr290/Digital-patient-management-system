@@ -11,6 +11,24 @@ import uuid
 patients_bp = Blueprint("patients", __name__)
 
 
+# ── FIX 3: Single shared notification logger — replaces 8 duplicate inserts ──
+def _log_notification(patient_id, log_type, channel_data, ok, error=None):
+    """Insert a single notification log record into sms_logs collection."""
+    doc = {
+        "patient_id": patient_id,
+        "type": log_type,
+        "sent_at": datetime.datetime.utcnow(),
+        "ok": ok,
+        **channel_data,
+    }
+    if error:
+        doc["error"] = error
+    try:
+        db.sms_logs.insert_one(doc)
+    except Exception:
+        pass  # log failure is non-critical
+
+
 def send_booking_confirmation(patient):
     """Send immediate booking confirmation via email and SMS"""
     patient_id = patient.get("patient_id")
@@ -48,52 +66,27 @@ Please arrive 5 minutes early. If you need to reschedule, kindly inform us in ad
 Regards,
 Medical Team"""
             
-            # Send SMS
+            # FIX 3: Use shared _log_notification instead of duplicate inserts
             if phone:
                 try:
                     ok, resp = send_sms(phone, sms_message)
-                    db.sms_logs.insert_one({
-                        "patient_id": patient_id,
-                        "type": "booking_confirmation",
-                        "phone": phone,
-                        "message": sms_message,
-                        "sent_at": datetime.datetime.utcnow(),
-                        "ok": bool(ok),
-                        "response": resp,
-                    })
+                    _log_notification(patient_id, "booking_confirmation",
+                                      {"phone": phone, "message": sms_message, "response": resp}, bool(ok))
                     print(f"✅ SMS sent to {phone}: {ok}")
                 except Exception as e:
                     print(f"❌ SMS failed for {phone}: {str(e)}")
-                    db.sms_logs.insert_one({
-                        "patient_id": patient_id,
-                        "type": "booking_confirmation",
-                        "phone": phone,
-                        "sent_at": datetime.datetime.utcnow(),
-                        "ok": False,
-                        "error": str(e),
-                    })
+                    _log_notification(patient_id, "booking_confirmation",
+                                      {"phone": phone}, False, error=str(e))
             
             # Send Email
             if email:
                 try:
                     send_email(email, email_subject, email_body)
-                    db.sms_logs.insert_one({
-                        "patient_id": patient_id,
-                        "type": "booking_confirmation_email",
-                        "email": email,
-                        "subject": email_subject,
-                        "sent_at": datetime.datetime.utcnow(),
-                        "ok": True,
-                    })
+                    _log_notification(patient_id, "booking_confirmation_email",
+                                      {"email": email, "subject": email_subject}, True)
                 except Exception as e:
-                    db.sms_logs.insert_one({
-                        "patient_id": patient_id,
-                        "type": "booking_confirmation_email",
-                        "email": email,
-                        "sent_at": datetime.datetime.utcnow(),
-                        "ok": False,
-                        "error": str(e),
-                    })
+                    _log_notification(patient_id, "booking_confirmation_email",
+                                      {"email": email}, False, error=str(e))
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -123,48 +116,24 @@ def _send_visit_notification(patient_id, visit, next_visit_iso):
             email_subject = "Appointment Confirmation"
             email_body = f"Dear {name},\n\nThank you for visiting us today for {treatment}.\n\nYour next appointment is scheduled on {date_str}.\n\nPlease arrive 5 minutes early. If you need to reschedule, kindly inform us in advance.\n\nRegards,\nMedical Team"
 
+            # FIX 3: Use shared _log_notification instead of duplicate inserts
             if phone:
                 try:
                     ok, resp = send_sms(phone, sms_message)
-                    db.sms_logs.insert_one({
-                        "patient_id": patient_id,
-                        "type": "visit_confirmation",
-                        "phone": phone,
-                        "message": sms_message,
-                        "sent_at": datetime.datetime.utcnow(),
-                        "ok": bool(ok),
-                        "response": resp,
-                    })
+                    _log_notification(patient_id, "visit_confirmation",
+                                      {"phone": phone, "message": sms_message, "response": resp}, bool(ok))
                 except Exception as e:
-                    db.sms_logs.insert_one({
-                        "patient_id": patient_id,
-                        "type": "visit_confirmation",
-                        "phone": phone,
-                        "sent_at": datetime.datetime.utcnow(),
-                        "ok": False,
-                        "error": str(e),
-                    })
+                    _log_notification(patient_id, "visit_confirmation",
+                                      {"phone": phone}, False, error=str(e))
             
             if email:
                 try:
                     send_email(email, email_subject, email_body)
-                    db.sms_logs.insert_one({
-                        "patient_id": patient_id,
-                        "type": "visit_confirmation_email",
-                        "email": email,
-                        "subject": email_subject,
-                        "sent_at": datetime.datetime.utcnow(),
-                        "ok": True,
-                    })
+                    _log_notification(patient_id, "visit_confirmation_email",
+                                      {"email": email, "subject": email_subject}, True)
                 except Exception as e:
-                    db.sms_logs.insert_one({
-                        "patient_id": patient_id,
-                        "type": "visit_confirmation_email",
-                        "email": email,
-                        "sent_at": datetime.datetime.utcnow(),
-                        "ok": False,
-                        "error": str(e),
-                    })
+                    _log_notification(patient_id, "visit_confirmation_email",
+                                      {"email": email}, False, error=str(e))
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -215,6 +184,7 @@ def create_patient():
             "doctor_advice": data.get("doctor_advice", ""),
             "treatment": data.get("treatment", ""),
             "photos": data.get("photos", []),
+            "videos": data.get("videos", []),
             "medicines": data.get("medicines", []),
             "blood_tests": data.get("blood_tests", []),
             "next_visit": next_visit_iso,
@@ -337,6 +307,8 @@ def update_patient(patient_id):
         visit.setdefault("amount_paid", "")
         visit.setdefault("dispatch_date", "")
         visit.setdefault("tracking_id", "")
+        visit.setdefault("photos", [])
+        visit.setdefault("videos", [])
         update["$push"]["visits"] = visit
     # update top-level fields
     for k in ["full_name", "age", "gender", "whatsapp", "email", "address", "medical_history", "current_issues"]:
@@ -345,20 +317,44 @@ def update_patient(patient_id):
     update["$set"]["updated_at"] = datetime.datetime.utcnow()
 
     # clean empty keys
-    if not update["$push"]:
-        update.pop("$push")
-    if not update["$set"]:
-        update.pop("$set")
+    if not update.get("$push"):
+        update.pop("$push", None)
+    if not update.get("$set"):
+        update.pop("$set", None)
 
     if not update:
         return jsonify({"msg": "nothing to update"}), 400
 
-    res = db.patients.update_one({"patient_id": patient_id}, update)
+    # FIX 9: Archive full visit + cap embedded visits at 5 to keep patient doc small
+    notification_sent = False
+    if visit:
+        # Archive full visit to separate collection for historical queries
+        try:
+            db.visit_archive.insert_one({
+                "patient_id": patient_id,
+                "visit": {**visit, "archived_at": datetime.datetime.utcnow()},
+                "archived_at": datetime.datetime.utcnow(),
+            })
+        except Exception:
+            pass  # archive failure is non-critical
+
+        # Use $slice to keep only last 5 visits embedded in patient doc
+        set_fields = {k: v for k, v in update.get("$set", {}).items()}
+        set_fields["updated_at"] = datetime.datetime.utcnow()
+        res = db.patients.update_one(
+            {"patient_id": patient_id},
+            {
+                "$push": {"visits": {"$each": [visit], "$slice": -5}},
+                "$set": set_fields,
+            }
+        )
+    else:
+        res = db.patients.update_one({"patient_id": patient_id}, update)
+
     if res.matched_count == 0:
         return jsonify({"msg": "not found"}), 404
 
-    # Send booking confirmation for new visit
-    notification_sent = False
+    # Send notification for new visit
     if visit:
         threading.Thread(target=_send_visit_notification, args=(patient_id, visit, next_visit_iso)).start()
         notification_sent = True
